@@ -11,10 +11,13 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    // Cloudflare WebSocket support
     transports: ['websocket', 'polling'],
     pingTimeout: 60000,
-    pingInterval: 25000
+    pingInterval: 25000,
+    cors: {
+        origin: "*",
+        credentials: true
+    }
 });
 
 const storage = multer.diskStorage({
@@ -33,20 +36,28 @@ app.use(express.static('public'));
 
 function transcodeVideo(inputPath, outputPath, height, videoBitrate, audioBitrate) {
     console.log(`Memulai kompresi ke ${height}p...`);
-    ffmpeg(inputPath)
-        .output(outputPath)
-        .videoCodec('libx264')
-        .videoFilters(`scale=-2:${height}`)
-        .videoBitrate(videoBitrate)
-        .audioCodec('aac')
-        .audioBitrate(audioBitrate)
-        .outputOptions(['-movflags faststart', '-preset ultrafast'])
-        .on('end', () => console.log(`Kompresi ${height}p selesai!`))
-        .on('error', (err) => console.error(`Gagal kompresi ${height}p:`, err.message))
-        .run();
+    return new Promise((resolve, reject) => {
+        ffmpeg(inputPath)
+            .output(outputPath)
+            .videoCodec('libx264')
+            .videoFilters(`scale=-2:${height}`)
+            .videoBitrate(videoBitrate)
+            .audioCodec('aac')
+            .audioBitrate(audioBitrate)
+            .outputOptions(['-movflags faststart', '-preset ultrafast'])
+            .on('end', () => {
+                console.log(`Kompresi ${height}p selesai!`);
+                resolve();
+            })
+            .on('error', (err) => {
+                console.error(`Gagal kompresi ${height}p:`, err.message);
+                reject(err);
+            })
+            .run();
+    });
 }
 
-app.post('/upload', upload.single('videoFile'), (req, res) => {
+app.post('/upload', upload.single('videoFile'), async (req, res) => {
     if (!req.file) return res.status(400).json({ success: false });
 
     const filename = req.file.filename;
@@ -54,10 +65,17 @@ app.post('/upload', upload.single('videoFile'), (req, res) => {
     const baseName = path.basename(filename, ext);
     const inputPath = `./uploads/${filename}`;
 
-    transcodeVideo(inputPath, `./uploads/${baseName}_360p${ext}`, 360, '400k', '64k');
-    transcodeVideo(inputPath, `./uploads/${baseName}_144p${ext}`, 144, '100k', '32k');
-
-    res.json({ success: true, url: `/stream/${filename}` });
+    try {
+        await transcodeVideo(inputPath, `./uploads/${baseName}_360p${ext}`, 360, '400k', '64k');
+        await transcodeVideo(inputPath, `./uploads/${baseName}_144p${ext}`, 144, '100k', '32k');
+        
+        res.json({ 
+            success: true, 
+            url: `/stream/${filename}` 
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 app.get('/stream/:filename', (req, res) => {
@@ -84,21 +102,46 @@ function streamFile(filePath, req, res) {
     const fileSize = stat.size;
     const range = req.headers.range;
 
+    // Set headers untuk streaming
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
     if (range) {
-        const parts = range.replace(/bytes=/, '').split('-');
-        const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-        const chunksize = (end - start) + 1;
-        const head = {
-            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-            'Accept-Ranges': 'bytes',
-            'Content-Length': chunksize,
-            'Content-Type': 'video/mp4',
-        };
-        res.writeHead(206, head);
-        fs.createReadStream(filePath, { start, end }).pipe(res);
+        try {
+            const parts = range.replace(/bytes=/, '').split('-');
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+            const chunksize = (end - start) + 1;
+
+            if (start >= fileSize || end >= fileSize) {
+                res.status(416).set('Content-Range', `bytes */${fileSize}`).send();
+                return;
+            }
+
+            const head = {
+                'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': chunksize,
+                'Content-Type': 'video/mp4',
+                'Cache-Control': 'no-cache',
+                'Access-Control-Allow-Origin': '*'
+            };
+            res.writeHead(206, head);
+            fs.createReadStream(filePath, { start, end }).pipe(res);
+        } catch (err) {
+            console.error('Stream error:', err);
+            res.status(500).send('Stream error');
+        }
     } else {
-        res.writeHead(200, { 'Content-Length': fileSize, 'Content-Type': 'video/mp4' });
+        const head = {
+            'Content-Length': fileSize,
+            'Content-Type': 'video/mp4',
+            'Cache-Control': 'no-cache',
+            'Access-Control-Allow-Origin': '*'
+        };
+        res.writeHead(200, head);
         fs.createReadStream(filePath).pipe(res);
     }
 }
@@ -108,15 +151,15 @@ function streamFile(filePath, req, res) {
 // ============================================================
 
 const roomPeers = {};
-const roomStates = {};      // { url, time, isPlaying, lastUpdate }
-const roomUsers = {};       // roomId → [socketId, ...]
-const userNames = {};       // roomId → { socketId: name }
-const roomHosts = {};       // roomId → socketId
+const roomStates = {};
+const roomUsers = {};
+const userNames = {};
+const roomHosts = {};
 const roomHostAssigned = {};
 const roomBuffering = {};
 const messageStore = {};
 const roomUsernameLock = {};
-const roomSeats = {};       // roomId → { seatId: { name, socketId } }
+const roomSeats = {};
 
 // ============================================================
 // SOCKET.IO
@@ -185,32 +228,28 @@ io.on('connection', (socket) => {
     });
 
     // ============================================================
-    // SYNC ENGINE HANDLERS (SIMPLIFIED)
+    // SYNC ENGINE HANDLERS
     // ============================================================
 
-    // Host mengirim posisi video secara berkala
     socket.on('host-heartbeat', (data) => {
         if (roomHosts[socket.roomId] !== socket.id) return;
 
         const roomId = socket.roomId;
         const now = Date.now();
 
-        // Update state room
         if (!roomStates[roomId]) return;
         roomStates[roomId].time = data.time;
         roomStates[roomId].isPlaying = data.isPlaying;
         roomStates[roomId].lastUpdate = now;
 
-        // Broadcast ke semua viewer (bukan host)
         socket.to(roomId).emit('sync-from-host', {
             time: data.time,
             isPlaying: data.isPlaying,
-            clientTime: data.clientTime,  // diteruskan untuk hitung RTT di client
+            clientTime: data.clientTime,
             serverTime: now
         });
     });
 
-    // Client meminta sync state saat ini
     socket.on('client-sync-request', (clientTime) => {
         const roomId = socket.roomId;
         if (!roomStates[roomId]) return;
@@ -228,7 +267,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // Request sync manual (dipakai saat join atau force sync)
     socket.on('request-sync', () => {
         const roomId = socket.roomId;
         if (!roomStates[roomId]) return;
@@ -247,7 +285,7 @@ io.on('connection', (socket) => {
     });
 
     // ============================================================
-    // CONTROL EVENTS (play/pause/seek dari host)
+    // CONTROL EVENTS
     // ============================================================
 
     socket.on('play', (data) => {
@@ -262,7 +300,6 @@ io.on('connection', (socket) => {
             roomStates[roomId].isPlaying = true;
             roomStates[roomId].lastUpdate = now;
         }
-        // Broadcast ke semua (termasuk host untuk konfirmasi)
         io.to(roomId).emit('play', { time: data.time, clientTime: data.clientTime, serverTime: now });
     });
 
@@ -361,9 +398,14 @@ io.on('connection', (socket) => {
         const roomId = socket.roomId;
         const messageId = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
         const messageData = {
-            id: messageId, name: data.name, msg: data.msg,
-            replyTo: data.replyTo || null, timestamp: Date.now(),
-            edited: false, editedAt: null, editCount: 0
+            id: messageId,
+            name: data.name,
+            msg: data.msg,
+            replyTo: data.replyTo || null,
+            timestamp: Date.now(),
+            edited: false,
+            editedAt: null,
+            editCount: 0
         };
         if (!messageStore[roomId]) messageStore[roomId] = {};
         messageStore[roomId][messageId] = messageData;
@@ -374,19 +416,24 @@ io.on('connection', (socket) => {
         const roomId = socket.roomId;
         const { messageId, newText } = data;
         if (!messageStore[roomId]?.[messageId]) {
-            socket.emit('error-message', '❌ Pesan tidak ditemukan!'); return;
+            socket.emit('error-message', '❌ Pesan tidak ditemukan!');
+            return;
         }
         const message = messageStore[roomId][messageId];
         if (message.name !== socket.username) {
-            socket.emit('error-message', '❌ Anda hanya bisa mengedit pesan Anda sendiri!'); return;
+            socket.emit('error-message', '❌ Anda hanya bisa mengedit pesan Anda sendiri!');
+            return;
         }
         message.msg = newText;
         message.edited = true;
         message.editedAt = Date.now();
         message.editCount += 1;
         io.to(roomId).emit('message-edited', {
-            id: messageId, msg: newText, edited: true,
-            editedAt: message.editedAt, editCount: message.editCount
+            id: messageId,
+            msg: newText,
+            edited: true,
+            editedAt: message.editedAt,
+            editCount: message.editCount
         });
     });
 
@@ -397,7 +444,8 @@ io.on('connection', (socket) => {
     socket.on('toggle-username-lock', (data) => {
         const roomId = socket.roomId;
         if (roomHosts[roomId] !== socket.id) {
-            socket.emit('error-message', '❌ Hanya Host yang bisa mengunci nama pengguna!'); return;
+            socket.emit('error-message', '❌ Hanya Host yang bisa mengunci nama pengguna!');
+            return;
         }
         const newStatus = data.lock !== undefined ? data.lock : !roomUsernameLock[roomId];
         roomUsernameLock[roomId] = newStatus;
@@ -418,14 +466,21 @@ io.on('connection', (socket) => {
     socket.on('kick-user-by-name', (username) => {
         const roomId = socket.roomId;
         if (roomHosts[roomId] !== socket.id) {
-            socket.emit('error-message', '❌ Hanya Host yang bisa mengeluarkan peserta!'); return;
+            socket.emit('error-message', '❌ Hanya Host yang bisa mengeluarkan peserta!');
+            return;
         }
         let targetId = null;
         for (const [id, name] of Object.entries(userNames[roomId] || {})) {
             if (name === username) { targetId = id; break; }
         }
-        if (!targetId) { socket.emit('error-message', '❌ Peserta tidak ditemukan!'); return; }
-        if (targetId === socket.id) { socket.emit('error-message', '❌ Tidak bisa mengeluarkan diri sendiri!'); return; }
+        if (!targetId) {
+            socket.emit('error-message', '❌ Peserta tidak ditemukan!');
+            return;
+        }
+        if (targetId === socket.id) {
+            socket.emit('error-message', '❌ Tidak bisa mengeluarkan diri sendiri!');
+            return;
+        }
         io.to(targetId).emit('kicked', { message: 'Anda dikeluarkan dari room oleh Host.', roomId });
         setTimeout(() => {
             const targetSocket = io.sockets.sockets.get(targetId);
@@ -436,13 +491,18 @@ io.on('connection', (socket) => {
 
     socket.on('kick-user', (targetSocketId) => {
         if (roomHosts[socket.roomId] !== socket.id) {
-            socket.emit('error-message', '❌ Hanya Host yang bisa mengeluarkan user!'); return;
+            socket.emit('error-message', '❌ Hanya Host yang bisa mengeluarkan user!');
+            return;
         }
         if (targetSocketId === socket.id) {
-            socket.emit('error-message', '❌ Tidak bisa mengeluarkan diri sendiri!'); return;
+            socket.emit('error-message', '❌ Tidak bisa mengeluarkan diri sendiri!');
+            return;
         }
         const targetUser = userNames[socket.roomId]?.[targetSocketId];
-        if (!targetUser) { socket.emit('error-message', '❌ User tidak ditemukan di room!'); return; }
+        if (!targetUser) {
+            socket.emit('error-message', '❌ User tidak ditemukan di room!');
+            return;
+        }
         io.to(targetSocketId).emit('kicked', { message: 'Anda dikeluarkan dari room oleh Host.', roomId: socket.roomId });
         setTimeout(() => {
             const targetSocket = io.sockets.sockets.get(targetSocketId);
@@ -454,14 +514,21 @@ io.on('connection', (socket) => {
     socket.on('transfer-host-by-name', (username) => {
         const roomId = socket.roomId;
         if (roomHosts[roomId] !== socket.id) {
-            socket.emit('error-message', '❌ Hanya Host yang bisa mentransfer status Host!'); return;
+            socket.emit('error-message', '❌ Hanya Host yang bisa mentransfer status Host!');
+            return;
         }
         let targetId = null;
         for (const [id, name] of Object.entries(userNames[roomId] || {})) {
             if (name === username) { targetId = id; break; }
         }
-        if (!targetId) { socket.emit('error-message', '❌ Peserta tidak ditemukan!'); return; }
-        if (targetId === socket.id) { socket.emit('error-message', '❌ Tidak bisa transfer ke diri sendiri!'); return; }
+        if (!targetId) {
+            socket.emit('error-message', '❌ Peserta tidak ditemukan!');
+            return;
+        }
+        if (targetId === socket.id) {
+            socket.emit('error-message', '❌ Tidak bisa transfer ke diri sendiri!');
+            return;
+        }
         const oldHostId = roomHosts[roomId];
         roomHosts[roomId] = targetId;
         io.to(roomId).emit('host-info', { hostId: targetId, hostName: username });
@@ -473,13 +540,16 @@ io.on('connection', (socket) => {
     socket.on('transfer-host', (targetSocketId) => {
         const roomId = socket.roomId;
         if (roomHosts[roomId] !== socket.id) {
-            socket.emit('error-message', '❌ Hanya Host yang bisa mentransfer status Host!'); return;
+            socket.emit('error-message', '❌ Hanya Host yang bisa mentransfer status Host!');
+            return;
         }
         if (targetSocketId === socket.id) {
-            socket.emit('error-message', '❌ Tidak bisa transfer ke diri sendiri!'); return;
+            socket.emit('error-message', '❌ Tidak bisa transfer ke diri sendiri!');
+            return;
         }
         if (!userNames[roomId]?.[targetSocketId]) {
-            socket.emit('error-message', '❌ User target tidak ditemukan di room!'); return;
+            socket.emit('error-message', '❌ User target tidak ditemukan di room!');
+            return;
         }
         const oldHostId = roomHosts[roomId];
         roomHosts[roomId] = targetSocketId;
@@ -497,7 +567,8 @@ io.on('connection', (socket) => {
     socket.on('broadcast-message', (message) => {
         const roomId = socket.roomId;
         if (roomHosts[roomId] !== socket.id) {
-            socket.emit('error-message', '❌ Hanya Host yang bisa mengirim broadcast!'); return;
+            socket.emit('error-message', '❌ Hanya Host yang bisa mengirim broadcast!');
+            return;
         }
         io.to(roomId).emit('broadcast-message', message);
     });
@@ -508,7 +579,8 @@ io.on('connection', (socket) => {
 
     socket.on('request-peer-ids', () => {
         if (roomHosts[socket.roomId] !== socket.id) {
-            socket.emit('error-message', '❌ Hanya Host yang bisa Share Screen!'); return;
+            socket.emit('error-message', '❌ Hanya Host yang bisa Share Screen!');
+            return;
         }
         socket.emit('receive-peer-ids', roomPeers[socket.roomId] || []);
     });
@@ -531,7 +603,6 @@ io.on('connection', (socket) => {
         const { roomId, seats, name } = data;
         if (!roomSeats[roomId]) roomSeats[roomId] = {};
 
-        // Check if seats are available
         const taken = [];
         seats.forEach(seatId => {
             if (roomSeats[roomId][seatId]) {
@@ -544,7 +615,6 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // Reserve seats
         seats.forEach(seatId => {
             roomSeats[roomId][seatId] = {
                 name: name,
@@ -552,7 +622,6 @@ io.on('connection', (socket) => {
             };
         });
 
-        // Broadcast updated seat data
         io.to(roomId).emit('seats-updated', roomSeats[roomId]);
     });
 
@@ -566,12 +635,10 @@ io.on('connection', (socket) => {
         const roomId = socket.roomId;
         const username = socket.username || 'Seseorang';
 
-        // Clear buffering jika user ini yang buffering
         if (roomBuffering[roomId]?.bufferingUser === username) {
             roomBuffering[roomId] = { isBuffering: false, bufferingUser: null };
         }
 
-        // Remove dari users
         if (roomUsers[roomId]) {
             roomUsers[roomId] = roomUsers[roomId].filter(id => id !== socket.id);
             if (userNames[roomId]) delete userNames[roomId][socket.id];
@@ -579,7 +646,6 @@ io.on('connection', (socket) => {
             io.to(roomId).emit('user-list', Object.values(userNames[roomId] || {}));
         }
 
-        // Free up seats
         if (roomSeats[roomId]) {
             Object.keys(roomSeats[roomId]).forEach(seatId => {
                 if (roomSeats[roomId][seatId].socketId === socket.id) {
@@ -589,7 +655,6 @@ io.on('connection', (socket) => {
             io.to(roomId).emit('seats-updated', roomSeats[roomId]);
         }
 
-        // Handle host disconnect
         if (roomHosts[roomId] === socket.id) {
             if (roomUsers[roomId]?.length > 0) {
                 const newHostId = roomUsers[roomId][0];
@@ -600,7 +665,6 @@ io.on('connection', (socket) => {
                 io.to(newHostId).emit('role-assigned', { isHost: true, hostId: newHostId });
                 io.to(roomId).emit('system-message', `👑 ${username} (Host) telah keluar. ${newHostName} menjadi Host baru.`);
             } else {
-                // Room kosong, bersihkan semua
                 delete roomHosts[roomId];
                 delete roomHostAssigned[roomId];
                 delete roomStates[roomId];
