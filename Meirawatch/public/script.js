@@ -1,7 +1,5 @@
 // ============================================================
 // MeiraWatch - script.js (CLEAN SYNC ENGINE v2)
-// Masalah lama: 5+ sync engine berjalan bersamaan → konflik
-// Solusi: 1 sync engine utama, rate-only adjustment, no smooth seek
 // ============================================================
 
 const socket = io();
@@ -44,14 +42,8 @@ let isHostAction = true;
 // CUSTOM POSTER CONFIGURATION
 // ============================================================
 
-// Ganti URL ini dengan gambar poster film kamu
-// Bisa menggunakan URL online atau path lokal
 const MOVIE_POSTER_URL = 'https://media.themoviedb.org/t/p/w500/44n8JRGe1BAqCD5elcXxCOK9HrY.jpg';
 
-// Atau jika menggunakan gambar lokal di folder public:
-// const MOVIE_POSTER_URL = '/poster.jpg';
-
-// Fungsi untuk load poster
 function loadMoviePoster() {
     const img = document.getElementById('moviePosterImg');
     const placeholder = document.getElementById('posterPlaceholder');
@@ -63,19 +55,16 @@ function loadMoviePoster() {
             placeholder.style.display = 'none';
         };
         img.onerror = function() {
-            // Jika gambar gagal load, tetap tampilkan placeholder
             img.style.display = 'none';
             placeholder.style.display = 'flex';
             console.warn('Poster gagal dimuat, menggunakan placeholder');
         };
     } else {
-        // Jika tidak ada URL, tampilkan placeholder
         img.style.display = 'none';
         placeholder.style.display = 'flex';
     }
 }
 
-// Panggil saat DOM loaded
 document.addEventListener('DOMContentLoaded', function() {
     loadMoviePoster();
 });
@@ -84,7 +73,6 @@ document.addEventListener('DOMContentLoaded', function() {
 // THEME TOGGLE - DISABLED
 // ============================================================
 
-// Force dark theme (clear any saved light theme)
 localStorage.removeItem('theme');
 document.documentElement.setAttribute('data-theme', 'dark');
 
@@ -108,18 +96,9 @@ function showMonitors() {
 // BIOSKOP SEAT SELECTION - PREMIUM
 // ============================================================
 
-const TICKET_PRICE = 35000; // Harga per kursi
+const TICKET_PRICE = 35000;
 const VIP_SEATS = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8'];
-const TICKET_TEXT = {
-    movieTitle: 'Nobar Bersama',
-    cinemaName: 'MeiraWatch Cinema',
-    terms: 'Tiket ini berlaku untuk 1x masuk. Harap tunjukkan tiket ini saat masuk.',
-    footer: 'Terima kasih telah memilih MeiraWatch!'
-};
 
-// ============================================================
-// TICKET GENERATOR - XXI STYLE
-// ============================================================
 const TICKET_CONFIG = {
     cinemaName: 'PLAZA SENAYAN',
     cinemaSub: 'MeiraWatch',
@@ -130,7 +109,6 @@ const TICKET_CONFIG = {
     priceFormat: 'IDR {amount}',
 };
 
-// Fungsi generate ticket
 function generateTicket(seat, roomId, username, price, method) {
     const now = new Date();
     const dateStr = now.toLocaleDateString('id-ID', {
@@ -144,7 +122,6 @@ function generateTicket(seat, roomId, username, price, method) {
         minute: '2-digit'
     });
     
-    // Parse seat: C9 → Row C, Seat 9
     const row = seat.charAt(0);
     const seatNum = seat.substring(1);
     
@@ -270,7 +247,6 @@ function goBackToStep2() {
 
 // --- Seat Data ---
 function loadSeatData() {
-    // Fetch taken seats from server
     socket.emit('get-taken-seats', currentRoom);
 }
 
@@ -326,7 +302,6 @@ function toggleSeat(seatId) {
     const seat = document.querySelector(`.seat[data-seat-id="${seatId}"]`);
     if (!seat || seat.classList.contains('taken')) return;
 
-    // Deselect all seats first (only 1 seat allowed)
     document.querySelectorAll('.seat.selected').forEach(el => el.classList.remove('selected'));
     selectedSeats = [];
 
@@ -356,12 +331,10 @@ function processPayment() {
         return;
     }
 
-    // Simulate payment processing
     const btn = document.getElementById('payBtn');
     btn.disabled = true;
     btn.innerHTML = '<span class="btn-text">⏳ Memproses...</span>';
     
-    // Play camera shutter SFX
     cameraSound.currentTime = 0;
     cameraSound.play().catch(err => console.log('SFX play error:', err));
 
@@ -376,7 +349,6 @@ function showTicket() {
     document.getElementById('step3').classList.remove('active');
     document.getElementById('step4').classList.add('active');
 
-    // Reserve seat on server
     const username = document.getElementById('usernameInputModal').value.trim();
     socket.emit('reserve-seats', {
         roomId: currentRoom,
@@ -384,7 +356,6 @@ function showTicket() {
         name: username
     });
 
-    // Generate ticket using XXI generator
     const seat = selectedSeats[0];
     const total = TICKET_PRICE;
 
@@ -394,10 +365,8 @@ function showTicket() {
 
 // --- Enter Room ---
 function enterRoom() {
-    // Join room
     const username = document.getElementById('usernameInputModal').value.trim();
     
-    // Final join
     socket.emit('join-room', { 
         roomId: currentRoom, 
         peerId: myPeerId, 
@@ -407,35 +376,28 @@ function enterRoom() {
     socket.emit('request-user-count', currentRoom);
     socket.emit('request-sync');
     
-    // FIX TRANSITION: hide monitors and overlay then show app
     hideMonitors();
 
     const overlay = document.getElementById('roomOverlay');
     const appContainer = document.getElementById('appContainer');
     
-    // First, hide the ticket step
     document.getElementById('step4').classList.remove('active');
     
-    // Hide overlay instantly (no transition)
     overlay.style.transition = 'none';
     overlay.style.opacity = '0';
     overlay.style.display = 'none';
     
-    // Show app container with smooth transition
     appContainer.style.display = 'flex';
     appContainer.style.opacity = '0';
     appContainer.style.transform = 'scale(0.98)';
     appContainer.style.transition = 'none';
     
-    // Force reflow
     void appContainer.offsetWidth;
     
-    // Apply transition and show
     appContainer.style.transition = 'opacity 0.6s ease, transform 0.6s ease';
     appContainer.style.opacity = '1';
     appContainer.style.transform = 'scale(1)';
     
-    // Show success messages and restore monitors
     const seatList = selectedSeats.join(', ');
     const totalPrice = (selectedSeats.length * TICKET_PRICE).toLocaleString();
     
@@ -469,8 +431,6 @@ function hostQuickJoin() {
     currentRoom = roomId;
     document.getElementById('displayRoomId').innerText = roomId;
 
-    isHostMode = true;
-
     socket.emit('join-room', {
         roomId: currentRoom,
         peerId: myPeerId,
@@ -485,21 +445,18 @@ function hostQuickJoin() {
 }
 
 // ============================================================
-// PROFANITY FILTER (Multi-language - Client-side)
+// PROFANITY FILTER
 // ============================================================
 
 const profanityList = [
-    // Indonesian
     'anjing','anjg','anj','bangsat','babi','kontol','memek','ngentot','jancok',
     'jancuk','goblok','tolol','bodoh','idiot','setan','iblis','kampret','bajingan',
     'monyet','keparat','brengsek','tai','taik','asu','celeng','cok','mampus',
     'ngentod','kentod','ngewe','bejad','berengsek','sialan','lonte','pelacur',
     'perek','bencong','banci','waria','jembel','jembut','pepek','tempik',
-    // English
     'fuck','shit','damn','bitch','asshole','bastard','cunt','dick','pussy',
     'whore','slut','nigger','nigga','faggot','cock','twat','wanker','prick',
     'arse','bollocks','crap','piss','bastard','wank','jerk','douche','retard',
-    // Other common offensive words
     'porn','sex','nude','naked','rape','kill','murder','suicide','die',
     'hate','stupid','ugly','fat','loser','idiot','moron','imbecile','fool'
 ];
@@ -513,76 +470,63 @@ function containsProfanity(text) {
 }
 
 // ============================================================
-// SYNC ENGINE - SATU ENGINE, SATU PENDEKATAN
-// Prinsip:
-//   - Host kirim heartbeat tiap 2 detik
-//   - Client request sync tiap 3 detik
-//   - Koreksi drift HANYA via playbackRate (±10% max)
-//   - Seek langsung HANYA jika drift > 3 detik
-//   - TIDAK ada smooth seek animasi (penyebab loading)
-//   - TIDAK ada multiple engine berjalan bersamaan
+// SYNC ENGINE
 // ============================================================
 
 const SYNC = {
-    HOST_HEARTBEAT_MS: 1500,        // seberapa sering host kirim posisi (lebih sering)
-    CLIENT_SYNC_MS: 2000,           // seberapa sering client request sync (lebih sering)
-    DEAD_ZONE: 0.08,                // drift < ini: tidak perlu adjust (lebih kecil = lebih sensitif)
-    RATE_ZONE: 2.0,                 // drift < ini: koreksi via rate
-    SEEK_ZONE: 4.0,                 // drift >= ini: seek langsung
-    MAX_RATE: 1.15,                 // rate maksimal saat catch-up (lebih besar = catch-up lebih cepat)
-    MIN_RATE: 0.85,                 // rate minimal saat slow-down (lebih kecil = adjustment lebih luwes)
-    RATE_STEP: 0.001,               // seberapa cepat rate berubah per frame (lebih kecil = lebih smooth)
-    RATE_SMOOTHING: 0.92,           // exponential smoothing untuk drift (0.0-1.0)
+    HOST_HEARTBEAT_MS: 1500,
+    CLIENT_SYNC_MS: 2000,
+    DEAD_ZONE: 0.08,
+    RATE_ZONE: 2.0,
+    SEEK_ZONE: 4.0,
+    MAX_RATE: 1.15,
+    MIN_RATE: 0.85,
+    RATE_STEP: 0.001,
+    RATE_SMOOTHING: 0.92,
 };
 
 let syncEngine = {
-    hostTime: 0,         // waktu video host (diestimasi)
+    hostTime: 0,
     hostPlaying: false,
     latency: 0,
     avgLatency: 150,
     targetRate: 1.0,
     currentRate: 1.0,
-    rateRafId: null,     // requestAnimationFrame ID untuk rate transition
+    rateRafId: null,
     hostInterval: null,
     clientInterval: null,
     lastApplied: 0,
-    lastDrift: 0,        // untuk smoothing drift
+    lastDrift: 0,
 };
 
-// --- Hitung hostTime yang telah berlalu sejak sync terakhir ---
 function getEstimatedHostTime() {
     if (!syncEngine.hostPlaying) return syncEngine.hostTime;
     const elapsed = (Date.now() - syncEngine.lastApplied) / 1000;
     return syncEngine.hostTime + elapsed;
 }
 
-// --- Apply koreksi sync ke video dengan exponential smoothing ---
 function applySync() {
     if (!video || !video.src || isBuffering) return;
-    if (isHost) return; // Host tidak perlu sync ke diri sendiri
+    if (isHost) return;
 
     const estimated = getEstimatedHostTime();
     if (estimated <= 0) return;
 
     const localTime = video.currentTime;
-    let drift = estimated - localTime; // positif = client ketinggalan
+    let drift = estimated - localTime;
     
-    // Smooth drift dengan exponential moving average
     syncEngine.lastDrift = syncEngine.lastDrift * SYNC.RATE_SMOOTHING + drift * (1 - SYNC.RATE_SMOOTHING);
     const smoothedDrift = syncEngine.lastDrift;
     const absDrift = Math.abs(smoothedDrift);
 
-    // Level 1: Dalam batas toleransi → kembalikan rate ke 1.0 pelan-pelan
     if (absDrift < SYNC.DEAD_ZONE) {
         setTargetRate(1.0);
         return;
     }
 
-    // Level 2: Drift sedang → koreksi via playback rate dengan kurva smooth (smoothstep)
     if (absDrift < SYNC.RATE_ZONE) {
-        // Cubic easing untuk smooth rate transition
         const t = Math.min(absDrift / SYNC.RATE_ZONE, 1.0);
-        const eased = t * t * (3 - 2 * t); // smoothstep curve
+        const eased = t * t * (3 - 2 * t);
         const maxCorrection = (SYNC.MAX_RATE - 1.0);
         const correction = eased * maxCorrection;
         const newRate = smoothedDrift > 0
@@ -592,9 +536,7 @@ function applySync() {
         return;
     }
 
-    // Level 3: Drift besar → seek dengan buffer safety check
     if (absDrift >= SYNC.SEEK_ZONE) {
-        // Hanya seek jika buffered
         if (video.buffered.length > 0) {
             const bufferedEnd = video.buffered.end(video.buffered.length - 1);
             if (estimated <= bufferedEnd + 0.5) {
@@ -606,7 +548,6 @@ function applySync() {
     }
 }
 
-// --- Set target rate dan animasikan perpindahannya ---
 function setTargetRate(target) {
     syncEngine.targetRate = target;
     if (!syncEngine.rateRafId) {
@@ -624,17 +565,15 @@ function animateRate() {
 
     if (Math.abs(diff) < 0.0005) {
         video.playbackRate = target;
-        return; // Selesai, tidak perlu RAF lagi
+        return;
     }
 
-    // Smooth easing untuk rate change (gunakan sebagian dari diff untuk smoothness)
     const step = Math.sign(diff) * Math.min(Math.abs(diff) * 0.3, SYNC.RATE_STEP);
     video.playbackRate = current + step;
 
     syncEngine.rateRafId = requestAnimationFrame(animateRate);
 }
 
-// --- Host: kirim posisi video secara berkala ---
 function startHostHeartbeat() {
     if (syncEngine.hostInterval) clearInterval(syncEngine.hostInterval);
     syncEngine.hostInterval = setInterval(() => {
@@ -647,7 +586,6 @@ function startHostHeartbeat() {
     }, SYNC.HOST_HEARTBEAT_MS);
 }
 
-// --- Client: request sync secara berkala ---
 function startClientSync() {
     if (syncEngine.clientInterval) clearInterval(syncEngine.clientInterval);
     syncEngine.clientInterval = setInterval(() => {
@@ -656,7 +594,6 @@ function startClientSync() {
     }, SYNC.CLIENT_SYNC_MS);
 }
 
-// --- Hentikan semua sync interval ---
 function stopSyncEngine() {
     if (syncEngine.hostInterval) { clearInterval(syncEngine.hostInterval); syncEngine.hostInterval = null; }
     if (syncEngine.clientInterval) { clearInterval(syncEngine.clientInterval); syncEngine.clientInterval = null; }
@@ -664,7 +601,6 @@ function stopSyncEngine() {
     if (video) video.playbackRate = 1.0;
 }
 
-// --- Inisialisasi engine berdasarkan role ---
 function initSyncEngine() {
     stopSyncEngine();
     if (isHost) {
@@ -678,33 +614,28 @@ function initSyncEngine() {
 // SOCKET EVENTS - SERVER RESPONSES
 // ============================================================
 
-// Server menerima heartbeat host dan broadcast ke semua client
 socket.on('sync-from-host', (data) => {
-    if (isHost) return; // Host tidak perlu proses ini
+    if (isHost) return;
 
     const now = Date.now();
     const rtt = now - data.clientTime;
     const oneWay = rtt / 2;
 
-    // Estimasi posisi host saat ini (kompensasi network delay)
     syncEngine.hostTime = data.time + (oneWay / 1000);
     syncEngine.hostPlaying = data.isPlaying;
     syncEngine.latency = rtt;
     syncEngine.avgLatency = syncEngine.avgLatency * 0.8 + rtt * 0.2;
     syncEngine.lastApplied = now;
 
-    // Terapkan play/pause
     if (data.isPlaying && video.paused && !isBuffering) {
         video.play().catch(() => {});
     } else if (!data.isPlaying && !video.paused) {
         video.pause();
     }
 
-    // Terapkan koreksi posisi
     applySync();
 });
 
-// Server response ke client-sync-request
 socket.on('sync-response', (data) => {
     if (isHost) return;
 
@@ -736,7 +667,6 @@ socket.on('role-assigned', (data) => {
     hostId = data.hostId;
     updateControlsVisibility();
 
-    // Reset sync state when role assigned
     syncEngine.lastDrift = 0;
     syncEngine.targetRate = 1.0;
 
@@ -747,7 +677,6 @@ socket.on('role-assigned', (data) => {
         showSystemMessage('👤 Anda adalah Viewer. Selamat menonton!');
     }
 
-    // Restart engine dengan role baru
     if (video.src) initSyncEngine();
 });
 
@@ -766,7 +695,6 @@ function joinRoom() {
     const username = document.getElementById('usernameInputModal').value.trim()
         || document.getElementById('usernameInput').value || 'Guest';
 
-    // Validate username for profanity
     if (containsProfanity(username)) {
         showUsernameProfanityWarning();
         return;
@@ -807,19 +735,16 @@ video.addEventListener('pause', () => {
 video.addEventListener('seeked', () => {
     if (isHost && !isBuffering) {
         socket.emit('seek', { time: video.currentTime, clientTime: Date.now() });
-        // Reset state setelah seek
         syncEngine.hostTime = video.currentTime;
         syncEngine.lastApplied = Date.now();
     }
     isHostAction = true;
 });
 
-// --- BUFFERING DETECTION ---
 video.addEventListener('waiting', () => {
     if (!isBuffering) {
         isBuffering = true;
         bufferingIndicator.classList.add('active');
-        // Saat buffering: kembalikan rate ke 1.0 supaya tidak stuck
         if (syncEngine.rateRafId) {
             cancelAnimationFrame(syncEngine.rateRafId);
             syncEngine.rateRafId = null;
@@ -837,7 +762,6 @@ video.addEventListener('canplay', () => {
         bufferingIndicator.classList.remove('active');
         socket.emit('buffering-end', { time: video.currentTime });
 
-        // Resync setelah buffering selesai
         if (!isHost) {
             setTimeout(() => {
                 socket.emit('client-sync-request', Date.now());
@@ -846,7 +770,6 @@ video.addEventListener('canplay', () => {
     }
 });
 
-// Inisialisasi engine saat video siap diputar
 video.addEventListener('loadedmetadata', () => {
     if (currentRoom) initSyncEngine();
 });
@@ -912,7 +835,6 @@ socket.on('sync-state', (state) => {
     else if (!state.isPlaying && !video.paused) video.pause();
 });
 
-// --- AUTO SYNC JOIN ---
 socket.on('auto-sync-join', (state) => {
     if (!state.url) return;
     video.src = state.url;
@@ -927,7 +849,6 @@ socket.on('auto-sync-join', (state) => {
     };
 });
 
-// --- VIDEO CHANGED ---
 socket.on('video-changed', (data) => {
     screenPlayer.style.display = 'none';
     if (screenPlayer.srcObject) {
@@ -941,13 +862,11 @@ socket.on('video-changed', (data) => {
     video.play().catch(() => {});
     isHostAction = false;
 
-    // Reset sync state
     syncEngine.hostTime = 0;
     syncEngine.hostPlaying = true;
     syncEngine.lastApplied = Date.now();
 });
 
-// --- BUFFERING NOTIFICATION ---
 socket.on('buffering-notification', (data) => {
     showBufferingNotification && showBufferingNotification(data.user, true);
 });
@@ -956,7 +875,7 @@ socket.on('buffering-end', (data) => {
 });
 
 // ============================================================
-// FORCE SYNC (Tombol sync untuk host)
+// FORCE SYNC
 // ============================================================
 
 function forceSync() {
@@ -1149,13 +1068,11 @@ function sendMessage() {
     const msg = messageInput.value;
     if (!msg.trim()) return;
 
-    // Validate message for profanity
     if (containsProfanity(msg)) {
         showProfanityWarning();
         return;
     }
 
-    // Validate name for profanity
     if (containsProfanity(name)) {
         showChatNameProfanityWarning();
         return;
@@ -1174,7 +1091,6 @@ function editMessage() {
     const newText = messageInput.value;
     if (!newText.trim() || !editingMessageId) return;
 
-    // Validate edited text for profanity
     if (containsProfanity(newText)) {
         showProfanityWarning();
         return;
